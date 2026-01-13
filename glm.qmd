@@ -1,0 +1,496 @@
+---
+title: "Linear Models Project in R"
+subtitle: "M1–MIDO, 2025–2026"
+author:
+  - name: "Student Names"
+    affiliation: "Université / Program"
+date: last-modified
+lang: en
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: body
+    toc-title: "Contents"
+    number-sections: true
+    smooth-scroll: true
+    page-layout: full
+    linestretch: 1.2
+    fontsize: 125%
+    self-contained: true
+    df-print: default
+    code-fold: true
+    code-tools: false
+    code-line-numbers: false
+    code-overflow: scroll
+    code-copy: true
+    highlight-style: github
+    theme: cosmo
+    code-block-bg: "#F5F5F5" # Choose here https://www.w3schools.com/colors/colors_shades.asp
+    html-math-method: mathjax
+    fig-format: retina
+    fig-width: 13
+    fig-height: 7
+    fig-align: center
+    fig-pos: "H"
+    fig-cap-location: bottom
+    mainfont: "Source Sans Pro" # "Source Sans Pro" "Arial"  "Calibri"  "Cambria"  "Times New Roman"  "Georgia",  your favorite
+execute:
+  echo: true
+  warning: false
+  message: false
+  error: false
+editor:
+  markdown:
+    wrap: 110
+    canonical: true
+knitr:
+  opts_chunk:
+    tidy: styler
+    comment: ''
+    dev: svg # ou png
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+# Reproducibility
+set.seed(42)
+
+# Global options
+options(pillar.width = 130, width = 200, scipen = 999, digits = 5)
+
+# Add Packages here. Be careful of the ordering
+library(janitor)
+library(corrplot)
+library(kableExtra) # Pour de jolis tableaux
+library(patchwork)  # Pour assembler les graphiques
+library(here)      # Pour les chemins relatifs
+library(collapse)  # Pour la fonction relabel()
+library(tidyverse) # always load it in last position
+```
+
+# Introduction
+
+# Section 1 Data management and variable preparation
+
+## Section 1.1 - Data set
+
+We load the dataset
+
+```{r}
+raw_data <- read_csv("data/project.csv")
+raw_data
+```
+
+## Section 1.2 Rationale and Methodological Choices
+
+Factor Recoding: All categorical variables coded numerically (e.g., sexe, parent_educ) are converted to
+factors. We assign explicit labels to ensure plots and tables are readable.
+
+Reference Categories:
+
+For ordinal variables (e.g., parent_educ, sleep_qual), the lowest level (e.g., "No Formal Education", "Poor")
+is chosen as the reference to allow for "slope" interpretation.
+
+For nominal variables (e.g., sexe, school_type), the most frequent or "standard" category (e.g., "Public",
+"Female") is typically used, though "Public" (1) and "Female" (1) are set here by default numeric order.
+
+Redundant Variables: The dataset contains both continuous and categorical versions of Age (age vs agecat) and
+Attendance (attend_pct vs attend_pct_cat).
+
+Decision: We retain the continuous versions (age, attend_pct) and drop the categorical ones.
+
+Justification: Discretizing continuous variables results in a loss of information and statistical power
+(violating the "efficiency" principle). Keeping both would introduce perfect multicollinearity.
+
+<details>
+
+<summary><strong><strong style="color:rgb(255,0,0);"> Cliquez ici pour afficher la description detaillé des
+variables</strong></summary>
+
+<br>
+
+<h3>
+
+1.  Variables d'Identification et Réponse
+
+    </h3>
+
+    <ul>
+
+    <li><strong>id</strong> : Identifiant unique de l'étudiant.</li>
+
+    <li><strong>y (Score)</strong> : Note à l'examen (Variable cible à prédire).</li>
+
+    </ul>
+
+<h3>
+
+2.  Variables Démographiques
+
+    </h3>
+
+    <ul>
+
+    <li><strong>age</strong> : Âge en années (Continu).</li>
+
+    <li><strong>agecat</strong> : Âge catégorisé (1=14-15, 2=15-16, etc.). <em>Non utilisé au profit de
+    'age'.</em></li>
+
+    <li><strong>sexe</strong> : Genre (1=Femme, 2=Homme, 3=Autre).</li>
+
+    </ul>
+
+<h3>
+
+3.  Contexte Scolaire et Familial
+
+    </h3>
+
+    <ul>
+
+    <li><strong>school_type</strong> : Type d'école (1=Public, 2=Privé).</li>
+
+    <li><strong>parent_educ</strong> : Éducation des parents (1=Aucune à 6=Doctorat).</li>
+
+    <li><strong>web_access</strong> : Accès internet (1=Non, 2=Oui).</li>
+
+    </ul>
+
+<h3>
+
+4.  Habitudes de Vie et d'Étude
+
+    </h3>
+
+    <ul>
+
+    <li><strong>study_hrs</strong> : Heures d'étude par semaine.</li>
+
+    <li><strong>sleep_hrs</strong> : Heures de sommeil par nuit.</li>
+
+    <li><strong>sleep_qual</strong> : Qualité du sommeil (1=Mauvaise, 2=Moyenne, 3=Bonne).</li>
+
+    <li><strong>attend_pct</strong> : Présence en cours (%) (Continu).</li>
+
+    <li><strong>attend_pct_cat</strong> : Présence catégorisée. <em>Non utilisé au profit de
+    'attend_pct'.</em></li>
+
+    <li><strong>trav_time</strong> : Temps de trajet (1=\<15min, 2=15-30min, 3=30-60min, 4=\>60min).</li>
+
+    <li><strong>extra_act</strong> : Activités extrascolaires (1=Non, 2=Oui).</li>
+
+    <li><strong>study_method</strong> : Méthode de travail (1=Vidéos, 2=Coaching, 3=Notes, 4=Manuel, 5=Groupe,
+    6=Mixte).</li>
+
+    </ul>
+
+::: {style="background-color: #f9f9f9; padding: 10px; border-left: 4px solid #ffcc00;"}
+\[cite_start\]<strong>Note importante :</strong> Les variables <code>agecat</code> et
+<code>attend_pct_cat</code> sont exclues de l'analyse pour éviter la redondance avec leurs versions continues
+(<code>age</code> et <code>attend_pct</code>), conformément aux instructions du projet\[cite: 42, 43, 52\].
+:::
+
+</details>
+
+## Section 2.2
+
+Some variable distributions. Blah blah blah
+
+```{r}
+data_clean <- raw_data |>
+  # Vérification de l'intégrité (lignes dupliquées)
+  distinct() |>
+  
+  # A. Conversion en Facteurs (Sémantique statistique)
+  mutate(
+    sexe = factor(sexe, 
+                  levels = c(1, 2, 3), 
+                  labels = c("Female", "Male", "Other")),
+    
+    school_type = factor(school_type, 
+                         levels = c(1, 2), 
+                         labels = c("Public", "Private")),
+    
+    # Ordinale traitée comme nominale pour les contrastes
+    parent_educ = factor(parent_educ, 
+                         levels = c(1, 2, 3, 4, 5, 6),
+                         labels = c("No Formal", "High School", "Graduate", 
+                                    "Post Grad 1", "Post Grad 2", "PHD")),
+    
+    sleep_qual = factor(sleep_qual, 
+                        levels = c(1, 2, 3), 
+                        labels = c("Poor", "Average", "Good")),
+    
+    web_access = factor(web_access, 
+                        levels = c(1, 2), 
+                        labels = c("No", "Yes")),
+    
+    trav_time = factor(trav_time, 
+                       levels = c(1, 2, 3, 4), 
+                       labels = c("<15 Min", "15-30 Min", "30-60 Min", ">60 Min")),
+    
+    extra_act = factor(extra_act, 
+                       levels = c(1, 2), 
+                       labels = c("No", "Yes")),
+    
+    study_method = factor(study_method, 
+                          levels = c(1, 2, 3, 4, 5, 6), 
+                          labels = c("Online Videos", "Coaching", "Notes", 
+                                     "Textbook", "Group Study", "Mixed"))
+  ) |>
+  
+  # B. Suppression des redondances (priorité aux versions continues)
+  select(-agecat, -attend_pct_cat) |>
+  
+  # C. Étiquetage des variables (Métadonnées académiques)
+  relabel(
+    id = "Student ID",
+    y = "Exam score",
+    age = "Age (years)",
+    sexe = "Gender",
+    school_type = "School type",
+    parent_educ = "Parental education",
+    study_hrs = "Weekly study hours",
+    sleep_hrs = "Sleep duration (hours)",
+    sleep_qual = "Sleep quality",
+    attend_pct = "School attendance (%)",
+    web_access = "Internet access",
+    trav_time = "Commute time",
+    extra_act = "Extracurricular activities",
+    study_method = "Study method"
+  )
+
+# -----------------------------------------------------------------------------
+# 2. VÉRIFICATION : PLAGES ET VALEURS EXTRÊMES
+# -----------------------------------------------------------------------------
+
+# A. Résumé des plages de valeurs (Range Check)
+# On vérifie rapidement que les min/max sont plausibles
+# (ex: attend_pct ne dépasse pas 100, age est cohérent)
+range_check <- data_clean |>
+  select(where(is.numeric), -id) |> # On exclut l'ID
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value") |>
+  group_by(Variable) |>
+  summarise(
+    Min = min(Value, na.rm = TRUE),
+    Mean = mean(Value, na.rm = TRUE),
+    Max = max(Value, na.rm = TRUE)
+  )
+
+print(range_check)
+
+# B. Identification des valeurs extrêmes (Outliers potentiels)
+# Méthode IQR (Interquartile Range) pour la variable réponse 'y'
+# Ces observations pourraient avoir un fort effet de levier ou être influentes
+outliers_y <- boxplot.stats(data_clean$y)$out
+
+if(length(outliers_y) > 0) {
+  # On extrait les lignes concernées pour inspection
+  extreme_cases <- data_clean |>
+    filter(y %in% outliers_y) |>
+    select(id, y, age, attend_pct) |>
+    arrange(y)
+  
+  cat("\n[ATTENTION] Nombre d'observations extrêmes détectées pour 'y' :", length(outliers_y), "\n")
+  print(head(extreme_cases)) # Affiche les premiers cas
+} else {
+  cat("\nAucune valeur extrême détectée pour la variable réponse 'y' (méthode IQR).\n")
+}
+```
+
+```{r}
+#| label: eda-descriptive-stats
+#| echo: true
+#| message: false
+
+
+
+# A. Statistiques pour les variables quantitatives
+# On sélectionne les numériques (sauf ID)
+num_summary <- data_clean |>
+  select(where(is.numeric), -id) |>
+  pivot_longer(everything(), names_to = "Variable", values_to = "Value") |>
+  group_by(Variable) |>
+  summarise(
+    N = n(),
+    Mean = mean(Value, na.rm = TRUE),
+    SD = sd(Value, na.rm = TRUE),
+    Median = median(Value, na.rm = TRUE),
+    IQR = IQR(Value, na.rm = TRUE),
+    Min = min(Value, na.rm = TRUE),
+    Max = max(Value, na.rm = TRUE)
+  )
+
+# Affichage du tableau formaté
+num_summary |>
+  kbl(caption = "Descriptive Statistics for Quantitative Variables", digits = 2) |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+# B. Tables de fréquence pour les variables catégorielles
+# On utilise une approche "tidy" pour tout afficher en une fois
+cat_summary <- data_clean |>
+  select(where(is.factor)) |>
+  pivot_longer(everything(), names_to = "Variable", values_to = "Category") |>
+  count(Variable, Category) |>
+  group_by(Variable) |>
+  mutate(
+    Proportion = n / sum(n) * 100 # En pourcentage
+  )
+
+# Affichage du tableau
+cat_summary |>
+  kbl(caption = "Frequency Tables for Categorical Variables", digits = 1) |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F) |>
+  scroll_box(height = "400px") # Ajoute une barre de défilement si le tableau est long
+```
+
+```{r}
+#| label: eda-distribution-y
+#| echo: true
+#| fig.cap: "Distribution of Exam Scores (y)"
+
+# 1. Histogramme avec densité
+p1 <- ggplot(data_clean, aes(x = y)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "steelblue", alpha = 0.7, color = "white") +
+  geom_density(color = "red", size = 1) +
+  labs(title = "Histogram & Density of Scores", x = "Exam Score (y)", y = "Density") +
+  theme_minimal()
+
+# 2. Boxplot pour voir les outliers
+p2 <- ggplot(data_clean, aes(x = y)) +
+  geom_boxplot(fill = "lightblue", outlier.colour = "red", outlier.shape = 16) +
+  labs(title = "Boxplot of Scores", x = "Exam Score (y)") +
+  theme_minimal() +
+  theme(axis.text.y = element_blank()) # On cache l'axe Y inutile ici
+
+# Affichage côte à côte (nécessite library patchwork)
+p1 + p2
+```
+
+The distribution of exam scores (y) appears approximately symmetric and bell-shaped, as confirmed by the
+overlap between the histogram and the density curve. The mean (approx. 55.6) and median (approx. 55.6) are
+nearly identical, indicating no significant skewness. However, the boxplot reveals several outliers (points in
+red) at both tails of the distribution (scores \< 15 or \> 95). These extreme cases represent exceptionally
+high or low performing students and should be monitored during diagnostic checks
+
+```{r}
+#| label: eda-bivariate
+#| echo: true
+#| fig.height: 10
+#| fig.cap: "Associations between Predictors and Exam Score"
+
+# A. Y vs Variables Quantitatives (Scatterplots)
+# On passe en format long pour utiliser facet_wrap
+data_clean |>
+  select(y, age, study_hrs, sleep_hrs, attend_pct) |>
+  pivot_longer(cols = -y, names_to = "Predictor", values_to = "Value") |>
+  ggplot(aes(x = Value, y = y)) +
+  geom_point(alpha = 0.3, size = 1) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) + # Courbe de tendance lisse
+  geom_smooth(method = "lm", color = "blue", linetype = "dashed", se = FALSE) + # Droite linéaire
+  facet_wrap(~Predictor, scales = "free_x") +
+  labs(title = "Exam Score vs Quantitative Predictors",
+       subtitle = "Red = Loess (Non-linear), Blue = Linear") +
+  theme_minimal()
+
+# B. Y vs Variables Catégorielles (Boxplots)
+# On sélectionne quelques variables clés pour l'exemple (ajoutez les autres si besoin)
+cat_vars <- c("sexe", "school_type", "parent_educ", "study_method")
+
+data_clean |>
+  select(y, all_of(cat_vars)) |>
+  pivot_longer(cols = -y, names_to = "Predictor", values_to = "Category") |>
+  ggplot(aes(x = Category, y = y, fill = Category)) +
+  geom_boxplot(show.legend = FALSE) +
+  facet_wrap(~Predictor, scales = "free_x", ncol = 2) +
+  labs(title = "Exam Score vs Categorical Predictors") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#| label: eda-associations
+#| echo: true
+#| message: false
+#| fig.cap: "Associations between Predictors (Multicollinearity & Confounding Checks)"
+
+library(corrplot)
+library(gridExtra) # Pour arranger plusieurs plots
+
+# -----------------------------------------------------------------------------
+# A. Numeric vs Numeric (Check for Multicollinearity)
+# -----------------------------------------------------------------------------
+# On calcule la matrice de corrélation uniquement pour les prédicteurs continus
+# But : Vérifier si deux variables apportent la même information.
+cor_preds <- data_clean |>
+  select(age, study_hrs, sleep_hrs, attend_pct) |>
+  cor(use = "complete.obs")
+
+# Visualisation
+# Commentaire : Les corrélations fortes (>0.7) signalent un risque de colinéarité.
+# Ici, regardez attentivement 'study_hrs' vs 'attend_pct'.
+corrplot(cor_preds, method = "color", type = "upper", 
+         addCoef.col = "black", tl.col = "black", diag = FALSE,
+         title = "Correlation Matrix of Predictors", mar = c(0,0,2,0))
+
+
+# -----------------------------------------------------------------------------
+# B. Categorical vs Categorical (Check for Confounding)
+# -----------------------------------------------------------------------------
+# Exemple clé : Le type d'école est-il lié au niveau d'éducation des parents ?
+# (Si oui, 'School Type' pourrait capturer l'effet de 'Parent Educ')
+
+p_confound <- data_clean |>
+  count(school_type, parent_educ) |>
+  group_by(school_type) |>
+  mutate(prop = n / sum(n)) |>
+  ggplot(aes(x = school_type, y = prop, fill = parent_educ)) +
+  geom_col(position = "fill") +
+  scale_fill_brewer(palette = "BuGn") +
+  labs(
+    x = vlabel(data_clean$school_type), 
+    y = "Proportion",
+    fill = vlabel(data_clean$parent_educ),
+    title = "Confounding Check: School Type vs Parent Educ"
+  ) +
+  theme_minimal()
+
+
+# -----------------------------------------------------------------------------
+# C. Mixed: Numeric vs Categorical (Check for Redundancy)
+# -----------------------------------------------------------------------------
+# Exemple clé : Le temps de trajet affecte-t-il la présence ?
+# (Si oui, inclure les deux pourrait déstabiliser le modèle)
+
+p_mixed <- ggplot(data_clean, aes(x = trav_time, y = attend_pct, fill = trav_time)) +
+  geom_boxplot(show.legend = FALSE) +
+  labs(
+    x = vlabel(data_clean$trav_time),
+    y = vlabel(data_clean$attend_pct),
+    title = "Assoc: Commute Time vs Attendance"
+  ) +
+  theme_minimal()
+
+# Affichage combiné
+grid.arrange(p_confound, p_mixed, ncol = 2)
+
+# Test statistique rapide (Chi-2) pour confirmer le lien School/Parent
+chisq_res <- chisq.test(table(data_clean$school_type, data_clean$parent_educ))
+message("Test du Chi-2 (School vs Parent) p-value : ", format.pval(chisq_res$p.value))
+```
+
+```{r}
+raw_data |> 
+  count(agecat)
+```
+
+```{r}
+raw_data |>   tabyl(sleep_qual)
+```
+
+```{r}
+raw_data |> 
+  ggplot(aes(x = study_hrs)) +
+  geom_histogram(fill = "grey", color = "black", bins = 10)
+```
