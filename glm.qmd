@@ -63,7 +63,15 @@ options(pillar.width = 130, width = 200, scipen = 999, digits = 5)
 
 # Add Packages here. Be careful of the ordering
 library(janitor)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(collapse)
+library(plotly)     # Nécessaire pour l'interactivité
+library(htmltools)  # Nécessaire pour l'affichage dans une boucle
 library(corrplot)
+library(ggiraph)
+library(vcd) # Pour le calcul du V de Cramer (Associations Cat-Cat)
 library(kableExtra) # Pour de jolis tableaux
 library(patchwork)  # Pour assembler les graphiques
 library(here)      # Pour les chemins relatifs
@@ -302,14 +310,17 @@ if(length(outliers_y) > 0) {
 ```
 
 ```{r}
-#| label: eda-descriptive-stats
+#| label: eda-descriptive-tables
 #| echo: true
 #| message: false
 
+# On récupère tous les labels d'un coup pour s'en servir facilement
+var_labs <- vlabels(data_clean)
 
-
-# A. Statistiques pour les variables quantitatives
-# On sélectionne les numériques (sauf ID)
+# -----------------------------------------------------------------------------
+# 1. Statistiques Descriptives (Variables Quantitatives)
+# -----------------------------------------------------------------------------
+# On calcule les stats, puis on remplace le nom de code par le Label
 num_summary <- data_clean |>
   select(where(is.numeric), -id) |>
   pivot_longer(everything(), names_to = "Variable", values_to = "Value") |>
@@ -321,52 +332,60 @@ num_summary <- data_clean |>
     Median = median(Value, na.rm = TRUE),
     IQR = IQR(Value, na.rm = TRUE),
     Min = min(Value, na.rm = TRUE),
-    Max = max(Value, na.rm = TRUE)
-  )
+    Max = max(Value, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(Variable = var_labs[Variable]) # On applique les labels ici
 
-# Affichage du tableau formaté
-num_summary |>
-  kbl(caption = "Descriptive Statistics for Quantitative Variables", digits = 2) |>
+# Affichage
+kbl(num_summary, caption = "Descriptive Statistics for Quantitative Variables", digits = 2) |>
   kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
 
-# B. Tables de fréquence pour les variables catégorielles
-# On utilise une approche "tidy" pour tout afficher en une fois
+# -----------------------------------------------------------------------------
+# 2. Tables de Fréquence (Variables Catégorielles)
+# -----------------------------------------------------------------------------
 cat_summary <- data_clean |>
   select(where(is.factor)) |>
-  pivot_longer(everything(), names_to = "Variable", values_to = "Category") |>
-  count(Variable, Category) |>
-  group_by(Variable) |>
+  pivot_longer(everything(), names_to = "CodeName", values_to = "Category") |>
+  count(CodeName, Category) |>
+  group_by(CodeName) |>
   mutate(
-    Proportion = n / sum(n) * 100 # En pourcentage
-  )
+    Proportion = n / sum(n) * 100,
+    Label = var_labs[CodeName] # Ajout du Label propre
+  ) |>
+  ungroup() |>
+  select(Label, Category, n, Proportion) 
 
-# Affichage du tableau
-cat_summary |>
-  kbl(caption = "Frequency Tables for Categorical Variables", digits = 1) |>
-  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F) |>
-  scroll_box(height = "400px") # Ajoute une barre de défilement si le tableau est long
+# Affichage
+kbl(cat_summary, caption = "Frequency Tables for Categorical Variables", digits = 1) |>
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = F) |>
+  scroll_box(height = "400px")
 ```
 
 ```{r}
 #| label: eda-distribution-y
 #| echo: true
 #| fig.cap: "Distribution of Exam Scores (y)"
+#| fig.height: 5
 
-# 1. Histogramme avec densité
+# Récupération du label de y
+y_lab <- var_labs["y"]
+
+# 1. Histogramme + Densité
 p1 <- ggplot(data_clean, aes(x = y)) +
-  geom_histogram(aes(y = ..density..), bins = 30, fill = "steelblue", alpha = 0.7, color = "white") +
-  geom_density(color = "red", size = 1) +
-  labs(title = "Histogram & Density of Scores", x = "Exam Score (y)", y = "Density") +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, fill = "#4E84C4", color = "white", alpha = 0.8) +
+  geom_density(color = "#D16103", linewidth = 1) +
+  labs(title = paste("Distribution of", y_lab), x = y_lab, y = "Density") +
   theme_minimal()
 
-# 2. Boxplot pour voir les outliers
+# 2. Boxplot (Détection outliers)
 p2 <- ggplot(data_clean, aes(x = y)) +
-  geom_boxplot(fill = "lightblue", outlier.colour = "red", outlier.shape = 16) +
-  labs(title = "Boxplot of Scores", x = "Exam Score (y)") +
+  geom_boxplot(fill = "#4E84C4", alpha = 0.5, outlier.colour = "red", outlier.shape = 16) +
+  labs(title = "Outlier Detection", x = y_lab) +
   theme_minimal() +
-  theme(axis.text.y = element_blank()) # On cache l'axe Y inutile ici
+  theme(axis.text.y = element_blank())
 
-# Affichage côte à côte (nécessite library patchwork)
+# Affichage combiné
 p1 + p2
 ```
 
@@ -377,120 +396,530 @@ red) at both tails of the distribution (scores \< 15 or \> 95). These extreme ca
 high or low performing students and should be monitored during diagnostic checks
 
 ```{r}
-#| label: eda-bivariate
+#| label: eda-bivariate-final
 #| echo: true
+#| results: asis
 #| fig.height: 10
-#| fig.cap: "Associations between Predictors and Exam Score"
+#| fig.cap: "Bivariate Analysis: Exam Score vs Predictors"
 
-# A. Y vs Variables Quantitatives (Scatterplots)
-# On passe en format long pour utiliser facet_wrap
-data_clean |>
-  select(y, age, study_hrs, sleep_hrs, attend_pct) |>
-  pivot_longer(cols = -y, names_to = "Predictor", values_to = "Value") |>
-  ggplot(aes(x = Value, y = y)) +
-  geom_point(alpha = 0.3, size = 1) +
-  geom_smooth(method = "loess", color = "red", se = FALSE) + # Courbe de tendance lisse
-  geom_smooth(method = "lm", color = "blue", linetype = "dashed", se = FALSE) + # Droite linéaire
-  facet_wrap(~Predictor, scales = "free_x") +
-  labs(title = "Exam Score vs Quantitative Predictors",
-       subtitle = "Red = Loess (Non-linear), Blue = Linear") +
-  theme_minimal()
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(collapse) # Pour récupérer les labels
 
-# B. Y vs Variables Catégorielles (Boxplots)
-# On sélectionne quelques variables clés pour l'exemple (ajoutez les autres si besoin)
-cat_vars <- c("sexe", "school_type", "parent_educ", "study_method")
+# 1. Préparation des données et labels
+my_labs <- vlabels(data_clean)
+y_lab <- my_labs["y"] # "Exam score"
 
-data_clean |>
-  select(y, all_of(cat_vars)) |>
-  pivot_longer(cols = -y, names_to = "Predictor", values_to = "Category") |>
-  ggplot(aes(x = Category, y = y, fill = Category)) +
-  geom_boxplot(show.legend = FALSE) +
-  facet_wrap(~Predictor, scales = "free_x", ncol = 2) +
-  labs(title = "Exam Score vs Categorical Predictors") +
+# Séparation des types de variables
+vars_num <- names(data_clean)[sapply(data_clean, is.numeric)]
+vars_num <- setdiff(vars_num, c("id", "y")) # On garde que les prédicteurs X
+vars_cat <- names(data_clean)[sapply(data_clean, is.factor)]
+
+# Début des onglets Quarto
+cat("::: {.panel-tabset}\n")
+
+# -----------------------------------------------------------------------------
+# ONGLET 1 : Quantitative Predictors (Scatterplots)
+# -----------------------------------------------------------------------------
+cat("\n## Quantitative Predictors\n\n")
+
+# On passe en format long pour tout afficher sur une grille (Facet Wrap)
+long_num <- data_clean |>
+  select(y, all_of(vars_num)) |>
+  pivot_longer(cols = -y, names_to = "Var_Code", values_to = "Value") |>
+  mutate(Var_Label = my_labs[Var_Code]) # On associe le joli nom
+
+# Graphique : Nuage de points + Courbes
+p_num <- ggplot(long_num, aes(x = Value, y = y)) +
+  # A. Les points (Données brutes)
+  geom_point(alpha = 0.3, color = "gray50", size = 1) +
+  
+  # B. La courbe "LOESS" (Orange) : Montre la tendance RÉELLE (même courbe/non-linéaire)
+  geom_smooth(method = "loess", color = "#D16103", se = FALSE, size = 1) + 
+  
+  # C. La droite "LM" (Bleue pointillée) : Montre ce que le modèle linéaire va voir
+  geom_smooth(method = "lm", color = "blue", linetype = "dashed", se = FALSE) + 
+  
+  # Mise en page
+  facet_wrap(~Var_Label, scales = "free_x", ncol = 2) +
+  labs(
+    title = "Linearity Check: Score vs Quantitative Variables",
+    subtitle = "Orange = Observed Trend (Loess) | Blue = Linear Assumption",
+    y = y_lab,
+    x = ""
+  ) +
   theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  theme(strip.text = element_text(face = "bold", size = 11))
 
-#| label: eda-associations
+print(p_num)
+
+# -----------------------------------------------------------------------------
+# ONGLET 2 : Categorical Predictors (Boxplots)
+# -----------------------------------------------------------------------------
+cat("\n## Categorical Predictors\n\n")
+
+# Transformation format long
+long_cat <- data_clean |>
+  select(y, all_of(vars_cat)) |>
+  pivot_longer(cols = -y, names_to = "Var_Code", values_to = "Category") |>
+  mutate(Var_Label = my_labs[Var_Code])
+
+# Graphique : Boxplots
+p_cat <- ggplot(long_cat, aes(x = Category, y = y, fill = Category)) +
+  geom_boxplot(outlier.colour = "red", outlier.shape = 16, alpha = 0.7, show.legend = FALSE) +
+  facet_wrap(~Var_Label, scales = "free_x", ncol = 3) +
+  labs(
+    title = "Group Comparison: Score vs Categorical Variables",
+    y = y_lab,
+    x = ""
+  ) +
+  scale_fill_brewer(palette = "Pastel2") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1),
+    strip.text = element_text(face = "bold", size = 10),
+    panel.grid.major.x = element_blank()
+  )
+
+print(p_cat)
+
+# Fin des onglets
+cat(":::\n")
+```
+
+```{r}
+#| label: eda-mixed-tabsets
 #| echo: true
-#| message: false
-#| fig.cap: "Associations between Predictors (Multicollinearity & Confounding Checks)"
+#| results: asis
+#| fig.height: 8
+#| fig.cap: "Distribution des variables numériques selon les groupes (Approche par Onglets)"
 
-library(corrplot)
-library(gridExtra) # Pour arranger plusieurs plots
-
-# -----------------------------------------------------------------------------
-# A. Numeric vs Numeric (Check for Multicollinearity)
-# -----------------------------------------------------------------------------
-# On calcule la matrice de corrélation uniquement pour les prédicteurs continus
-# But : Vérifier si deux variables apportent la même information.
-cor_preds <- data_clean |>
-  select(age, study_hrs, sleep_hrs, attend_pct) |>
-  cor(use = "complete.obs")
-
-# Visualisation
-# Commentaire : Les corrélations fortes (>0.7) signalent un risque de colinéarité.
-# Ici, regardez attentivement 'study_hrs' vs 'attend_pct'.
-corrplot(cor_preds, method = "color", type = "upper", 
-         addCoef.col = "black", tl.col = "black", diag = FALSE,
-         title = "Correlation Matrix of Predictors", mar = c(0,0,2,0))
-
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(collapse) # Pour vlabels
 
 # -----------------------------------------------------------------------------
-# B. Categorical vs Categorical (Check for Confounding)
+# 1. MATRICE DE CORRÉLATION (NUMERIQUE vs NUMERIQUE)
 # -----------------------------------------------------------------------------
-# Exemple clé : Le type d'école est-il lié au niveau d'éducation des parents ?
-# (Si oui, 'School Type' pourrait capturer l'effet de 'Parent Educ')
+# Objectif : Identifier la colinéarité entre prédicteurs quantitatifs
 
-p_confound <- data_clean |>
-  count(school_type, parent_educ) |>
-  group_by(school_type) |>
-  mutate(prop = n / sum(n)) |>
-  ggplot(aes(x = school_type, y = prop, fill = parent_educ)) +
-  geom_col(position = "fill") +
-  scale_fill_brewer(palette = "BuGn") +
+# Sélection des variables numériques (hors ID et Y)
+vars_num_data <- data_clean |> select(where(is.numeric), -id, -y)
+cor_mat <- cor(vars_num_data, use = "complete.obs")
+
+# Affichage propre avec corrplot
+corrplot(cor_mat, 
+         method = "color", 
+         type = "upper", 
+         order = "hclust", 
+         addCoef.col = "black", # Ajoute les coefficients
+         tl.col = "black",      # Couleur du texte
+         tl.srt = 45,           # Rotation du texte
+         diag = FALSE,          # Cache la diagonale
+         title = "Correlation Matrix (Numeric Predictors)", 
+         mar = c(0,0,2,0))
+
+# -----------------------------------------------------------------------------
+# 2. CONFOUNDING CHECK (CATEGORIELLE vs CATEGORIELLE)
+# -----------------------------------------------------------------------------
+# Objectif : Voir tous les liens entre variables quali d'un coup (Heatmap)
+
+# Récupération des variables et calcul du V de Cramer pour toutes les paires
+vars_cat <- names(data_clean)[sapply(data_clean, is.factor)]
+cramer_mat <- matrix(NA, nrow = length(vars_cat), ncol = length(vars_cat))
+rownames(cramer_mat) <- vars_cat
+colnames(cramer_mat) <- vars_cat
+
+# Texte pour le survol (Hover text)
+hover_txt <- matrix(NA, nrow = length(vars_cat), ncol = length(vars_cat))
+
+for(i in seq_along(vars_cat)) {
+  for(j in seq_along(vars_cat)) {
+    if(i != j) {
+      # Calcul statistique
+      stat <- assocstats(table(data_clean[[vars_cat[i]]], data_clean[[vars_cat[j]]]))
+      val <- stat$cramer
+      cramer_mat[i, j] <- val
+      
+      # Texte explicatif propre
+      hover_txt[i, j] <- paste0(
+        "Var 1: ", vars_cat[i], "<br>",
+        "Var 2: ", vars_cat[j], "<br>",
+        "Cramer's V: ", round(val, 3)
+      )
+    }
+  }
+}
+
+# Graphique Interactif (Heatmap)
+p_cramer <- plot_ly(
+  x = vars_cat, y = vars_cat, z = cramer_mat,
+  text = hover_txt, hoverinfo = "text",
+  type = "heatmap", colors = "Blues"
+) |> 
+  layout(
+    title = "Confounding Check: Categorical Associations (Cramer's V)",
+    yaxis = list(autorange = "reversed") # Pour avoir l'ordre classique de lecture
+  )
+
+# Affichage de la Heatmap
+p_cramer
+
+#MIXED
+
+# 1. Préparation des données
+# On sépare les numériques et les catégorielles
+vars_num <- names(data_clean)[sapply(data_clean, is.numeric)]
+vars_num <- setdiff(vars_num, c("id", "y")) # On exclut ID et la cible Y
+vars_cat <- names(data_clean)[sapply(data_clean, is.factor)]
+
+# 2. Calcul du R-Carré (Force de l'association)
+# On crée une grille vide pour stocker les résultats
+results <- expand.grid(Num_Var = vars_num, Cat_Var = vars_cat)
+results$R_Squared <- NA
+
+for(i in 1:nrow(results)) {
+  v_num <- results$Num_Var[i]
+  v_cat <- results$Cat_Var[i]
+  
+  # On ajuste un modèle linéaire simple : Numérique ~ Catégorielle
+  # Le R-carré de ce modèle nous donne le % de variance expliquée par le groupe
+  model <- lm(data_clean[[v_num]] ~ data_clean[[v_cat]])
+  results$R_Squared[i] <- summary(model)$r.squared
+}
+
+# 3. Ajout des "Jolis Noms" pour l'affichage
+my_labs <- vlabels(data_clean)
+results <- results |>
+  mutate(
+    Num_Label = my_labs[as.character(Num_Var)],
+    Cat_Label = my_labs[as.character(Cat_Var)]
+  )
+
+# 4. Visualisation (Heatmap)
+# Plus c'est foncé, plus les variables sont liées (Redondance potentielle)
+ggplot(results, aes(x = Cat_Label, y = Num_Label, fill = R_Squared)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(R_Squared, 2)), color = "black", size = 4) +
+  scale_fill_gradient(low = "#f7fbff", high = "#e6550d", limits = c(0, 1), name = "R² (Force)") +
   labs(
-    x = vlabel(data_clean$school_type), 
-    y = "Proportion",
-    fill = vlabel(data_clean$parent_educ),
-    title = "Confounding Check: School Type vs Parent Educ"
+    title = "Associations : Variables Numériques vs Groupes",
+    subtitle = "Valeur = Part de variance expliquée (0 = Nul, 1 = Redondance Totale)",
+    x = "Variable de Groupe (Catégorielle)",
+    y = "Variable Quantitative"
   ) +
-  theme_minimal()
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank()
+  )
+```
 
+```{r}
+#| label: eda-ordinal-trends
+#| echo: true
+#| fig.height: 6
+#| fig.cap: "Trend Analysis for Ordinal Predictors (Red line connects means)"
 
-# -----------------------------------------------------------------------------
-# C. Mixed: Numeric vs Categorical (Check for Redundancy)
-# -----------------------------------------------------------------------------
-# Exemple clé : Le temps de trajet affecte-t-il la présence ?
-# (Si oui, inclure les deux pourrait déstabiliser le modèle)
+library(patchwork)
 
-p_mixed <- ggplot(data_clean, aes(x = trav_time, y = attend_pct, fill = trav_time)) +
-  geom_boxplot(show.legend = FALSE) +
-  labs(
-    x = vlabel(data_clean$trav_time),
-    y = vlabel(data_clean$attend_pct),
-    title = "Assoc: Commute Time vs Attendance"
-  ) +
-  theme_minimal()
+# Fonction pour créer un plot avec tendance moyenne
+plot_ordinal_trend <- function(var_name, title) {
+  
+  # Calcul des moyennes par groupe pour la ligne de tendance
+  trend_data <- data_clean |>
+    group_by(.data[[var_name]]) |>
+    summarise(mean_y = mean(y, na.rm = TRUE))
+  
+  ggplot(data_clean, aes(x = .data[[var_name]], y = y)) +
+    # 1. Boxplots pour la distribution
+    geom_boxplot(aes(fill = .data[[var_name]]), alpha = 0.3, show.legend = FALSE, outlier.shape = NA) +
+    # 2. Points et Ligne de moyenne (La tendance)
+    geom_point(data = trend_data, aes(y = mean_y), color = "#D16103", size = 3) +
+    geom_line(data = trend_data, aes(y = mean_y, group = 1), color = "#D16103", size = 1, linetype = "dashed") +
+    labs(
+      title = title, 
+      x = "", 
+      y = vlabels(data_clean)["y"]
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1))
+}
+
+# Création des 3 graphiques clés
+p1 <- plot_ordinal_trend("parent_educ", "Parental Education (Ordinal)")
+p2 <- plot_ordinal_trend("sleep_qual", "Sleep Quality (Ordinal)")
+p3 <- plot_ordinal_trend("trav_time", "Commute Time (Ordinal)")
 
 # Affichage combiné
-grid.arrange(p_confound, p_mixed, ncol = 2)
-
-# Test statistique rapide (Chi-2) pour confirmer le lien School/Parent
-chisq_res <- chisq.test(table(data_clean$school_type, data_clean$parent_educ))
-message("Test du Chi-2 (School vs Parent) p-value : ", format.pval(chisq_res$p.value))
+p1 + p2 + p3
 ```
 
-```{r}
-raw_data |> 
-  count(agecat)
-```
+### Summary of EDA & Modeling Strategy
+
+Based on the visual and statistical exploration above, we highlight **four key findings** that will guide our
+linear modeling strategy:
+
+1.  **Strongest Predictors (Candidates):**
+    -   **Attendance (`attend_pct`)** and **Study Hours (`study_hrs`)** appear to be the strongest
+        quantitative drivers of exam scores, showing clear positive associations.
+    -   **Parental Education (`parent_educ`)** shows a strong monotonic positive trend (as seen in the ordinal
+        analysis above), suggesting that higher cultural capital is linked to better performance.
+    -   **School Type (`school_type`)** shows a significant gap (Private \> Public), but this is likely
+        confounded by parental background (Cramer's V analysis).
+2.  **Non-Linearity & Transformations:**
+    -   The relationship between `study_hrs` and scores seems to show **diminishing returns** (the slope
+        flattens at high hours). We will test a quadratic term ($study\_hrs^2$) or a log transformation to
+        capture this saturation effect.
+    -   `attend_pct` is left-skewed (capped at 100%). We will check if a transformation is needed, though a
+        linear term often suffices for percentages in this range.
+3.  **Interaction Hypotheses:**
+    -   **School × Parents:** Since private schools concentrate highly educated families (confounding), we
+        should test if the *benefit* of private schooling differs by parental level (Interaction:
+        `school_type * parent_educ`).
+    -   **Study × Efficiency:** Does studying more hours yield the same benefit regardless of the method? We
+        will test `study_hrs * study_method` to see if certain methods (e.g., "Coaching") have a steeper
+        slope.
+4.  **Multicollinearity Concerns:**
+    -   The correlation between `trav_time` and `attend_pct` suggests that long commutes mechanically reduce
+        attendance. To avoid redundancy and Variance Inflation (VIF), we might prioritize `attend_pct` (the
+        direct cause of learning) and treat `trav_time` as a background instrumental variable or exclude it
+        from the primary model.
 
 ```{r}
-raw_data |>   tabyl(sleep_qual)
+#| label: models-simple-baseline
+#| echo: true
+#| message: false
+#| warning: false
+
+library(broom)
+library(purrr)
+
+# 1. Liste des prédicteurs (tous sauf id et y)
+predictors <- setdiff(names(data_clean), c("id", "y"))
+
+# 2. Fonction pour ajuster un modèle simple et extraire les infos clés
+fit_simple_lm <- function(pred) {
+  # Formule : y ~ predicteur
+  form <- as.formula(paste("y ~", pred))
+  model <- lm(form, data = data_clean)
+  
+  # On récupère les stats du modèle (R2) et des coefficients
+  glance_mod <- glance(model)
+  tidy_mod <- tidy(model) |> 
+    filter(term != "(Intercept)") |> # On garde que la pente, pas l'intercept
+    slice(1) # Pour les facteurs, on prend juste le 1er contraste pour l'aperçu
+  
+  # On combine pour le tableau final
+  tibble(
+    Predictor = vlabels(data_clean)[pred], # Joli nom
+    R_Squared = glance_mod$r.squared,
+    Coeff = tidy_mod$estimate,
+    P_Value = tidy_mod$p.value
+  )
+}
+
+# 3. Application à tous les prédicteurs et tri par R² (Force du lien)
+simple_results <- map_dfr(predictors, fit_simple_lm) |>
+  arrange(desc(R_Squared))
+
+# 4. Affichage du tableau de synthèse
+simple_results |>
+  mutate(
+    P_Value = format.pval(P_Value, digits = 3, eps = 0.001),
+    Coeff = round(Coeff, 3),
+    R_Squared = round(R_Squared, 3)
+  ) |>
+  kbl(caption = "Simple Linear Regressions: Baseline Associations (Ranked by Strength)", 
+      col.names = c("Predictor", "R² (Variance Explained)", "Coefficient (Slope)", "P-Value")) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
 ```
 
+"The table above establishes our descriptive baseline. As anticipated by the EDA, Attendance (attend_pct) and
+Study Hours (study_hrs) are the strongest individual predictors, explaining the largest share of variance
+($R^2$) in exam scores. Socio-demographic factors like Parental Education also show significant unadjusted
+associations."
+
+Based on our exploratory analysis and substantive reasoning, we defined our modeling strategy as
+follows:Demographic Controls: Although Gender (sexe) did not show a strong visual correlation with scores, we
+retain it as a fundamental sociological control variable to ensure that any observed effects are not biased by
+gender demographics.Redundancy Check: We observed a strong association between Sleep Quality and Sleep
+Duration ($R^2 = 0.65$). To avoid multicollinearity, we retain only Sleep Duration (sleep_hrs), as it is a
+quantitative variable that allows for non-linear testing.Confounding Factors: Cramer’s V analysis highlighted
+non-negligible associations between school_type, parent_educ, and web_access. We include these variables to
+control for environmental confounding.Substantive Selection: Our primary focus is to measure the impact
+of:Environment: parent_educ and school_type (Cultural and institutional capital).Investment: attend_pct and
+study_hrs (Effort and attendance).Hypotheses for Model Refinement:Non-Linearity: Visual inspection suggests
+that sleep_hrs and study_hrs may have a quadratic relationship with scores (diminishing returns). We will test
+quadratic terms for these variables.Interaction: We hypothesize that the benefit of private schooling might
+depend on the family's socioeconomic background. We will test an interaction term: school_type \* parent_educ.
+
 ```{r}
-raw_data |> 
-  ggplot(aes(x = study_hrs)) +
-  geom_histogram(fill = "grey", color = "black", bins = 10)
+#| label: models-final-consolidation
+#| echo: true
+#| message: false
+#| warning: false
+
+library(broom)
+library(modelsummary)
+library(MASS)  # Nécessaire pour stepAIC
+library(dplyr) # On recharge dplyr pour être sûr, ou on utilisera dplyr::select
+
+# ==============================================================================
+# PARTIE A : CONSTRUCTION SÉQUENTIELLE DES MODÈLES (BUILDING)
+# ==============================================================================
+
+# 1. BASELINE (M1)
+model_1 <- lm(y ~ sexe+web_access + parent_educ + school_type + attend_pct + study_hrs + sleep_hrs, 
+              data = data_clean)
+
+# 2. AUGMENTED (M1b)
+model_1b <- update(model_1, . ~ . + study_method + trav_time)
+
+# 3. NON-LINEARITY (M2)
+model_2 <- update(model_1b, . ~ . + I(study_hrs^2) + I(sleep_hrs^2))
+
+# 4. INTERACTION SOCIOLOGIQUE (M3)
+model_3 <- update(model_2, . ~ . + school_type:parent_educ)
+
+# 5. INTERACTION PHYSIOLOGIQUE "ZOMBIE" (M4)
+model_4 <- update(model_3, . ~ . + attend_pct:sleep_hrs)
+
+# 6. INTERACTION COMPORTEMENTALE "BUSY BEE" (M5)
+model_5 <- update(model_4, . ~ . + study_hrs * extra_act)
+
+# 7. FINAL POLISH (M_FINAL)
+n <- nrow(data_clean)
+model_final <- stepAIC(model_5, direction = "both", k = log(n), trace = FALSE)
+model_final <- update(model_final, . ~ . + sexe)
+
+# ==============================================================================
+# PARTIE B : TABLEAU DE SYNTHÈSE (SELECTION)
+# ==============================================================================
+
+models_list <- list(
+  "1. Augmented" = model_1b,
+  "2. Non-Linear" = model_2,
+  "3. Context (Soc)" = model_3,
+  "4. Zombie (Physio)" = model_4,
+  "5. Busy Bee (Behav)" = model_5,
+  "6. Optimized (Final)" = model_final
+)
+
+modelsummary(
+  models_list,
+  stars = TRUE,
+  gof_map = c("nobs", "r.squared", "adj.r.squared", "aic", "bic"), 
+  title = "Comprehensive Model Selection: From Baseline to Optimized Champion"
+)
+
+# ==============================================================================
+# PARTIE C : VALIDATION DES HYPOTHÈSES (INFERENTIAL TESTS)
+# ==============================================================================
+
+cat("\n--- MODEL IMPROVEMENT LOG (ANOVA F-TESTS) ---\n")
+
+# CORRECTION ICI : On utilise dplyr::select pour éviter le conflit avec MASS
+cat("\n[Step 1 -> 2] Adding Quadratic Terms (Study^2, Sleep^2):\n")
+print(tidy(anova(model_1b, model_2)) |> dplyr::select(df, statistic, p.value))
+
+cat("\n[Step 2 -> 3] Adding School * Parents Interaction:\n")
+print(tidy(anova(model_2, model_3)) |> dplyr::select(df, statistic, p.value))
+
+cat("\n[Step 3 -> 4] Adding 'Zombie' Interaction (Attend * Sleep):\n")
+print(tidy(anova(model_3, model_4)) |> dplyr::select(df, statistic, p.value))
+
+cat("\n[Step 4 -> 5] Adding 'Busy Bee' Interaction (Study * Activity):\n")
+print(tidy(anova(model_4, model_5)) |> dplyr::select(df, statistic, p.value))
+
+cat("\n[Step 5 -> 6] Final Optimization Check:\n")
+if(AIC(model_final, k=log(n)) < AIC(model_5, k=log(n))) {
+  cat("The Stepwise algorithm simplified the model (Lower BIC). Use Model 6.\n")
+} else {
+  cat("The manual Model 5 was already optimal. Use Model 5.\n")
+}
+```
+
+Factor Simplification (Parsimony): Upon inspecting the coefficients of our selected model, we observed that
+the estimates for parental education levels "Post Grad 1" and "Post Grad 2" were nearly identical in magnitude
+and direction. This indicates that distinguishing between these two specific sub-levels provides no additional
+explanatory power regarding student performance. Consequently, we merged these two levels into a single
+category labeled "Post Graduate". This simplification reduces the model's complexity (degrees of freedom)
+without sacrificing information, adhering to the principle of parsimony.
+
+```{r}
+#| label: model-refinement-merging
+#| echo: true
+#| message: false
+
+library(forcats) # Pour manipuler les facteurs
+
+# 1. CRÉATION DE LA VARIABLE FUSIONNÉE
+# On modifie data_clean pour fusionner les niveaux
+data_refined <- data_clean |>
+  mutate(parent_educ = fct_collapse(parent_educ,
+    "Post Graduate" = c("Post Grad 1", "Post Grad 2") 
+    # On regroupe les deux anciens dans "Post Graduate"
+  ))
+
+# Vérification rapide : on regarde les nouveaux niveaux
+# levels(data_refined$parent_educ)
+
+# 2. MISE À JOUR DU MODÈLE CHAMPION (M5)
+# On refait tourner le Modèle 5 (Busy Bee) sur les données raffinées
+model_final_refined <- update(model_final, data = data_refined)
+
+# 3. COMPARAISON : EST-CE QUE ÇA VALAIT LE COUP ?
+# On compare l'ancien MFINAL avec le nouveau MFINAL "Fusionné"
+merging_comparison <- list(
+  "Mfinal: Original" = model_final,
+  "Mfinalb: Merged Levels" = model_final_refined
+)
+
+modelsummary(
+  merging_comparison,
+  stars = TRUE,
+  gof_map = c("nobs", "r.squared", "adj.r.squared", "aic", "bic"),
+  title = "Impact of Merging Parental Education Levels"
+)
+
+# Petit check de confirmation
+if(BIC(model_final_refined) < BIC(model_final)) {
+  cat("SUCCESS: Merging the levels reduced the BIC. The refined model is better.\n")
+} else {
+  cat("NOTE: The BIC is similar. We keep the merged model for simplicity.\n")
+}
+```
+
+## 3. Model Building Strategy
+
+We adopted a **forward stepwise approach**, constructing our model complexity layer by layer based on
+theoretical hypotheses. To ensure that each increase in complexity was statistically justified, we employed
+**Nested F-tests (ANOVA)** at each stage.
+
+The logic for comparing a simpler model ($M_{small}$) against a more complex one ($M_{large}$) is as follows:
+\* **Null Hypothesis (**$H_0$): The additional coefficients in $M_{large}$ are zero (the simpler model is
+sufficient). \* **Decision Rule:** If the **p-value is significant (**$p < 0.05$), we reject $H_0$ and
+conclude that the additional variables provide a significant reduction in the Residual Sum of Squares (RSS),
+justifying the more complex model.
+
+Our building process followed five key steps:
+
+1.  **Baseline & Augmentation (M1** $\rightarrow$ M1b): We started with core demographic and effort variables,
+    then tested the addition of contextual factors (Study Method, Commute Time).
+2.  **Non-Linearity (M1b** $\rightarrow$ M2): We tested the "Diminishing Returns" hypothesis by adding
+    quadratic terms ($X^2$) for study hours and sleep.
+3.  **Sociological Interaction (M2** $\rightarrow$ M3): We tested if the effect of school type varies by
+    parental education (`school_type * parent_educ`).
+4.  **Physiological Interaction (M3** $\rightarrow$ M4): We tested the "Zombie Hypothesis," positing that
+    sleep potentiates the effect of class attendance (`attend_pct * sleep_hrs`).
+5.  **Behavioral Interaction (M4** $\rightarrow$ M5): We tested if extracurricular activities moderate the
+    efficiency of study time (`study_hrs * extra_act`).
+
+The table below summarizes the progression and the statistical significance of each improvement.
+
+```{r}
+
 ```
